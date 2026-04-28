@@ -1,19 +1,32 @@
 # 설정 파일 및 비밀 키
 .env
+.envrc
 
-# 파이썬 캐시 및 가상환경
+# 파이썬 가상환경 및 캐시
 __pycache__/
 *.py[cod]
-.venv/
+*$py.class
 venv/
+.venv/
 env/
+ENV/
+env.bak/
+venv.bak/
 
 # 운영체제 관련
 .DS_Store
 Thumbs.db
 
-# pdf Output
+# 데이터 및 출력물 캐시
+data_cache/
 .pdf
 
-# data cache
-data_cache/
+# 배포/패키징 관련
+dist/
+build/
+*.egg-info/
+
+# IDE 설정 (선택 사항)
+.vscode/
+.idea/
+*.swp

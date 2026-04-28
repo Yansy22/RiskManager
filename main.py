@@ -13,15 +13,59 @@ def main():
     # 워크플로우 그래프 생성
     app = build_guardian_graph()
     
-    # 💡 [시나리오]
-    # 현재 보유 포트폴리오: 애플 60%, 마이크로소프트 40%
-    # 새로운 전략 (What-If): 기존 비중을 40%씩으로 줄이고 엔비디아를 20% 편입
+    import json
+    import yfinance as yf
+    import pandas as pd
+
+    # 1. 포트폴리오 파일 읽기
+    portfolio_file = "portfolio.json"
+    if not os.path.exists(portfolio_file):
+        print(f"🚨 Error: {portfolio_file} 파일이 없습니다. 파일을 생성해주세요.")
+        return
+        
+    with open(portfolio_file, "r") as f:
+        user_data = json.load(f)
+        
+    holdings = user_data.get("holdings", {})
+    cash = user_data.get("cash", 0.0)
+    watchlist_targets = user_data.get("watchlist", {})
+    
+    if not holdings:
+        print("🚨 Error: 보유 주식(holdings) 정보가 없습니다.")
+        return
+
+    # 2. 실시간 주가를 기반으로 현재 비중(Weight) 자동 계산
+    print("🔄 실시간 주가를 바탕으로 현재 자산 가치를 계산 중입니다...")
+    tickers = list(holdings.keys())
+    data = yf.download(tickers, period="5d", progress=False)
+    
+    if len(tickers) > 1 and isinstance(data.columns, pd.MultiIndex):
+        current_prices = data['Close'].iloc[-1]
+    else:
+        current_prices = pd.Series({tickers[0]: data['Close'].iloc[-1]})
+
+    total_stock_value = sum([holdings[t] * current_prices[t] for t in tickers])
+    initial_value = float(total_stock_value + cash)
+    
+    current_portfolio = {t: (holdings[t] * current_prices[t]) / initial_value for t in tickers}
+    
+    # 3. 새로운 포트폴리오 시나리오(What-If) 비중 자동 계산
+    # 관심 종목 비중만큼 기존 주식 비중을 균등하게 줄여서 편입한다고 가정
+    new_portfolio = {}
+    target_new_weight = sum(watchlist_targets.values())
+    reduction_factor = 1.0 - target_new_weight
+    
+    for t, w in current_portfolio.items():
+        new_portfolio[t] = w * reduction_factor
+    for t, w in watchlist_targets.items():
+        new_portfolio[t] = w
+
     initial_state = {
-        "current_portfolio": {"AAPL": 0.6, "MSFT": 0.4},
-        "new_portfolio": {"AAPL": 0.4, "MSFT": 0.4, "NVDA": 0.2},
-        "initial_value": 10000.0,
+        "current_portfolio": current_portfolio,
+        "new_portfolio": new_portfolio,
+        "initial_value": initial_value,
         "start_date": "2023-01-01",
-        "end_date": "2024-04-28"
+        "end_date": pd.Timestamp.today().strftime("%Y-%m-%d")
     }
     
     print("="*60)

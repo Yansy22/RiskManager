@@ -1,0 +1,10 @@
+{
+  "holdings": {
+    "AAPL": 15,
+    "MSFT": 10
+  },
+  "cash": 2000.0,
+  "watchlist": {
+    "NVDA": 0.2
+  }
+}
