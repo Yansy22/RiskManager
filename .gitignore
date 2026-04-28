@@ -1,0 +1,19 @@
+# 설정 파일 및 비밀 키
+.env
+
+# 파이썬 캐시 및 가상환경
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# 운영체제 관련
+.DS_Store
+Thumbs.db
+
+# pdf Output
+.pdf
+
+# data cache
+data_cache/
