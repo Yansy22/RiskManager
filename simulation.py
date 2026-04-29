@@ -68,8 +68,13 @@ def run_portfolio_simulation(
     initial_capital_per_asset = initial_portfolio_value * weights_arr
     shares = initial_capital_per_asset / S0
     
-    # 매일의 포트폴리오 가치 = sum(시뮬레이션 가격 * 주식 수)
-    portfolio_value = np.sum(simulated_prices * shares, axis=2)
+    # 투자된 총액 계산
+    invested_capital = np.sum(initial_capital_per_asset)
+    # 남은 현금 (시뮬레이션 기간 동안 가치가 변하지 않는다고 가정)
+    remaining_cash = initial_portfolio_value - invested_capital
+    
+    # 매일의 포트폴리오 가치 = sum(시뮬레이션 가격 * 주식 수) + 남은 현금
+    portfolio_value = np.sum(simulated_prices * shares, axis=2) + remaining_cash
     
     # 종목별 시각화를 위해 사전 형태로 궤적 반환
     asset_paths = {t: simulated_prices[:, :, i] for i, t in enumerate(tickers)}

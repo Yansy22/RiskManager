@@ -1,10 +1,11 @@
 {
   "holdings": {
-    "AAPL": 15,
-    "MSFT": 10
+    "QQQ": 5
   },
   "cash": 2000.0,
   "watchlist": {
-    "NVDA": 0.2
+    "NVDA": 0.2,
+    "GOOGL": 0.1,
+    "TSLA": 0.15
   }
 }

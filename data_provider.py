@@ -333,11 +333,15 @@ def get_monte_carlo_params(
         if data.empty:
             raise ValueError(f"No data found for tickers {tickers}")
 
-        # yfinance 반환 객체 구조 처리 (다중 티커 vs 단일 티커)
-        if len(tickers) > 1 and isinstance(data.columns, pd.MultiIndex):
+        # yfinance 반환 객체 구조 처리 (MultiIndex 여부에 따라 대응)
+        if isinstance(data.columns, pd.MultiIndex):
             prices = data['Close']
         else:
-            prices = pd.DataFrame({tickers[0]: data['Close']})
+            # 단일 종목이며 MultiIndex가 아닌 경우
+            if isinstance(data['Close'], pd.Series):
+                prices = pd.DataFrame({tickers[0]: data['Close']})
+            else:
+                prices = data['Close']
             
         # 2. 결측치(NaN) 처리
         # 상장일이 다르거나 휴장일이 겹치는 경우를 위해 앞선 가격으로 채우고 남은 결측치 제거
