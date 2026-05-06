@@ -7,10 +7,6 @@ from typing import Annotated, Dict, Optional, List, Tuple
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 
-# Internal utility from stockstats_utils.py (Removed because it's not in this project)
-# from .stockstats_utils import StockstatsUtils
-
-
 # 특정 기간 동안의 야후 파이낸스(Yahoo Finance) 주식 데이터를 온라인에서 가져오는 함수
 def get_YFin_data_online(
     symbol: Annotated[str, "ticker symbol of the company"],
@@ -309,7 +305,43 @@ def get_price_performance(ticker: str, curr_date: str) -> str:
     except Exception as e:
         return f"Error calculating price performance: {str(e)}"
 
-# --- New Monte Carlo Simulation Tools ---
+# --- Phase 1: Data Ingestion Tools ---
+
+def get_market_caps(tickers: List[str]) -> Dict[str, float]:
+    """포트폴리오 종목들의 시가총액(Market Cap)을 가져옵니다."""
+    caps = {}
+    print(f"      [Data] {len(tickers)}개 종목의 시가총액 데이터 수집 중...")
+    for t in tickers:
+        try:
+            ticker_obj = yf.Ticker(t.upper())
+            info = ticker_obj.info
+            # 일반 주식은 marketCap, ETF는 totalAssets 사용
+            cap = info.get('marketCap') or info.get('totalAssets')
+            if cap:
+                caps[t.upper()] = cap
+            else:
+                # 정보가 아예 없을 경우 (비상장 등) 10억 달러로 임시 할당하여 계산 진행
+                caps[t.upper()] = 1e9 
+                print(f"      [Warning] {t}의 자산 정보를 찾을 수 없어 임시값(1B)을 부여합니다.")
+        except Exception as e:
+            print(f"      [Error] {t} 시가총액 수집 실패: {e}")
+    return caps
+
+def get_risk_free_rate() -> float:
+    """미 국채 13주물(^IRX)을 기준으로 현재 무위험 수익률을 가져옵니다."""
+    try:
+        # ^IRX는 연수익률(%) 단위이므로 100으로 나눔
+        irx = yf.Ticker("^IRX")
+        hist = irx.history(period="1d")
+        if not hist.empty:
+            rate = hist['Close'].iloc[-1] / 100
+            print(f"      [Data] 현재 무위험 수익률(^IRX): {rate*100:.2f}%")
+            return rate
+    except Exception as e:
+        print(f"      [Warning] 무위험 수익률 수집 실패({e}), 기본값 0.035 사용.")
+    return 0.035
+
+# --- New Monte Carlo & BL Simulation Tools ---
 
 def get_monte_carlo_params(
     tickers: List[str],
@@ -318,42 +350,32 @@ def get_monte_carlo_params(
 ) -> Tuple[Optional[pd.DataFrame], Optional[pd.Series], Optional[pd.Series], Optional[pd.DataFrame]]:
     """
     몬테카를로 시뮬레이션에 필요한 통계 파라미터를 계산합니다.
-    
-    Returns:
-    - prices (DataFrame): 정제된 수정 종가 데이터
-    - annual_mean_returns (Series): 연환산 기대 수익률 (Drift)
-    - annual_volatility (Series): 연환산 표준편차 (Volatility)
-    - cov_matrix (DataFrame): 연환산 공분산 행렬 (Covariance Matrix)
     """
     try:
-        # 1. 과거 가격 데이터 다운로드
+        # 1. 과거 가격 데이터 다운로드 (최근 2년치 권장)
         print(f"      [Data] yfinance에서 {tickers} 데이터 다운로드 중... (기간: {start_date} ~ {end_date})")
         data = yf.download(tickers, start=start_date, end=end_date, progress=False)
         
         if data.empty:
             raise ValueError(f"No data found for tickers {tickers}")
 
-        # yfinance 반환 객체 구조 처리 (MultiIndex 여부에 따라 대응)
-        if isinstance(data.columns, pd.MultiIndex):
+        # 2. 가격 데이터 정제
+        if len(tickers) > 1:
             prices = data['Close']
         else:
-            # 단일 종목이며 MultiIndex가 아닌 경우
-            if isinstance(data['Close'], pd.Series):
-                prices = pd.DataFrame({tickers[0]: data['Close']})
-            else:
-                prices = data['Close']
+            prices = pd.DataFrame({tickers[0]: data['Close']}) if 'Close' in data else pd.DataFrame()
             
-        # 2. 결측치(NaN) 처리
-        # 상장일이 다르거나 휴장일이 겹치는 경우를 위해 앞선 가격으로 채우고 남은 결측치 제거
-        prices = prices.ffill().dropna()
+        if prices.empty:
+             raise ValueError(f"No Close price data found for {tickers}")
+
+        # 결측치 처리
+        prices = prices.ffill().bfill().dropna()
         
         if prices.empty:
             raise ValueError("Data became empty after handling missing values.")
 
-        # 3. 일별 로그 수익률 계산
+        # 3. 로그 수익률 및 통계량 계산
         returns = np.log(prices / prices.shift(1)).dropna()
-        
-        # 4. 연환산 통계량 계산 (1년 = 252 거래일)
         annual_mean_returns = returns.mean() * 252
         annual_volatility = returns.std() * np.sqrt(252)
         cov_matrix = returns.cov() * 252
@@ -361,5 +383,5 @@ def get_monte_carlo_params(
         return prices, annual_mean_returns, annual_volatility, cov_matrix
 
     except Exception as e:
-        print(f"Error calculating Monte Carlo parameters: {e}")
+        print(f"      [Error] Monte Carlo 파라미터 계산 실패: {e}")
         return None, None, None, None

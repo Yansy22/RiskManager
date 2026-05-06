@@ -5,3 +5,7 @@ pandas
 yfinance
 stockstats
 python-dateutil
+scipy
+matplotlib
+scikit-learn
+seaborn
