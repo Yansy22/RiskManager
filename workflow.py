@@ -9,7 +9,8 @@ from dotenv import load_dotenv
 
 from data_provider import get_monte_carlo_params, get_market_caps, get_risk_free_rate
 from simulation import run_portfolio_simulation, get_simulation_stats
-from engine import calculate_risk_clusters, black_litterman_posterior, optimize_portfolio
+from engine import calculate_risk_clusters, black_litterman_posterior, optimize_portfolio, calculate_rebalancing_plan
+from pdf_generator import generate_pdf_report
 
 # 1. 상태(State) 정의
 class PortfolioState(TypedDict):
@@ -32,6 +33,7 @@ class PortfolioState(TypedDict):
     # 비중 데이터
     current_weights: Dict[str, float]
     optimal_weights: Dict[str, float]
+    rebalance_plan: Dict[str, Any]      # 정수 단위 매매 계획
     
     start_date: str
     end_date: str
@@ -42,6 +44,7 @@ class PortfolioState(TypedDict):
     
     # 최종 결과물
     final_report: str
+    pdf_path: str                       # 생성된 PDF 파일 경로
 
 # 2. 노드(Nodes) 정의
 
@@ -51,7 +54,6 @@ def analysis_node(state: PortfolioState) -> PortfolioState:
     
     tickers = state["all_tickers"]
     user_views = {}
-    # holdings와 watchlist에서 score/confidence 추출
     for t in state["user_holdings"]:
         user_views[t] = {
             "score": state["user_holdings"][t].get("score", 5),
@@ -63,25 +65,30 @@ def analysis_node(state: PortfolioState) -> PortfolioState:
             "confidence": state["user_watchlist"][t].get("confidence", 5)
         }
 
-    # 데이터 로드
     prices, _, _, cov = get_monte_carlo_params(tickers, state["start_date"], state["end_date"])
     returns = np.log(prices / prices.shift(1)).dropna()
     
-    # Phase 2: 리스크 클러스터링
-    clusters = calculate_risk_clusters(returns)
+    threshold = state["settings"].get("clustering_threshold", 0.4)
+    clusters = calculate_risk_clusters(returns, threshold=threshold)
     
-    # Phase 3: 블랙-리터만 기대수익률 산출
     rf_rate = state["settings"].get("risk_free_rate", 0.035)
     mu_bl, _ = black_litterman_posterior(state["market_caps"], cov, user_views, rf_rate)
     
-    # Phase 4: 제약 조건 기반 최적화
+    mu_bl_with_cash = mu_bl.copy()
+    mu_bl_with_cash["CASH"] = rf_rate
+    
+    cov_with_cash = cov.copy()
+    cov_with_cash["CASH"] = 0.0
+    cash_row = pd.Series(0.0, index=cov_with_cash.columns, name="CASH")
+    cov_with_cash = pd.concat([cov_with_cash, cash_row.to_frame().T])
+    
     sector_limit = state["settings"].get("sector_limit", 0.3)
-    optimal_w = optimize_portfolio(mu_bl, cov, clusters, sector_limit, rf_rate)
+    optimal_w = optimize_portfolio(mu_bl_with_cash, cov_with_cash, clusters, sector_limit, rf_rate)
     
     return {
         "clusters": clusters,
-        "posterior_returns": mu_bl,
-        "cov_matrix": cov,
+        "posterior_returns": mu_bl_with_cash,
+        "cov_matrix": cov_with_cash,
         "optimal_weights": optimal_w
     }
 
@@ -93,72 +100,108 @@ def simulation_node(state: PortfolioState) -> PortfolioState:
     cov = state["cov_matrix"]
     mu_bl = state["posterior_returns"]
     
-    # 현재 가격 가져오기 (마지막 행)
     tickers = state["all_tickers"]
     prices, _, _, _ = get_monte_carlo_params(tickers, state["start_date"], state["end_date"])
     current_prices = prices.iloc[-1]
 
-    # A. 현재 포트폴리오 시뮬레이션
-    curr_paths, _ = run_portfolio_simulation(current_prices, mu_bl, cov, state["current_weights"], init_val)
+    current_prices_with_cash = current_prices.copy()
+    current_prices_with_cash["CASH"] = 1.0
+    
+    cov_stable = cov.copy()
+    for t in cov_stable.index:
+        cov_stable.loc[t, t] += 1e-9
+
+    curr_paths, _ = run_portfolio_simulation(current_prices_with_cash, mu_bl, cov_stable, state["current_weights"], init_val)
     curr_stats = get_simulation_stats(curr_paths, init_val)
     
-    # B. 최적 포트폴리오 시뮬레이션
-    opt_paths, _ = run_portfolio_simulation(current_prices, mu_bl, cov, state["optimal_weights"], init_val)
+    opt_paths, _ = run_portfolio_simulation(current_prices_with_cash, mu_bl, cov_stable, state["optimal_weights"], init_val)
     opt_stats = get_simulation_stats(opt_paths, init_val)
     
-    return {"current_stats": curr_stats, "optimal_stats": opt_stats}
+    rebalance_plan = calculate_rebalancing_plan(
+        state["current_weights"],
+        state["optimal_weights"],
+        current_prices_with_cash,
+        init_val,
+        state["user_holdings"]
+    )
+    
+    return {
+        "current_stats": curr_stats, 
+        "optimal_stats": opt_stats,
+        "rebalance_plan": rebalance_plan
+    }
 
 def strategy_node(state: PortfolioState) -> PortfolioState:
     """Phase 6: AI 가디언 리포트 생성 노드"""
     print("[Node 3] AI 가디언 전략 리포트 생성 중...")
     
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.2)
+    llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", temperature=0.2)
     
     current = state["current_stats"]
     optimal = state["optimal_stats"]
     
+    # 오늘 날짜 명시 (hallucination 방지)
+    today_str = pd.Timestamp.today().strftime("%Y년 %m월 %d일")
+    
     prompt = f"""
+    [필수 준수 사항]
+    1. 오늘 날짜는 **{today_str}**입니다. 리포트의 모든 날짜 관련 내용은 이 날짜를 기준으로 작성하세요.
+    2. **리포트 최상단에 반드시 아래와 같이 작성 일자를 명시하십시오.**
+       - **작성 일자: {today_str}**
+
+    [역할 설정]
     당신은 글로벌 헤지펀드의 수석 퀀트 전략가이자 리스크 관리 총괄 책임자(CRO)입니다.
-    사용자의 '현재 포트폴리오'와 수학적 최적화 엔진(Black-Litterman & QP)이 산출한 '최적 포트폴리오'를 비교하여, 전문가 수준의 [AI 가디언 전략 리포트]를 작성하세요.
+    제공된 데이터를 바탕으로 [AI 가디언 전략 리포트]를 작성하세요.
 
     [1. 분석 환경 및 기초 데이터]
+    - 보고서 작성일: {today_str}
     - 분석 기간: {state['start_date']} ~ {state['end_date']} (최근 {state['settings'].get('lookback_years')}년 데이터 활용)
     - 초기 투자금: ${state['initial_value']:,.2f}
     - 무위험 수익률(Benchmark): {state['settings'].get('risk_free_rate', 0.035)*100:.2f}% (현재 국채 금리 기준)
     - 리스크 관리 제약: 특정 클러스터 비중 합계 {state['settings'].get('sector_limit', 0.3)*100}% 이내 제한
+    - 클러스터링 임계값: {state['settings'].get('clustering_threshold', 0.4)}
 
-    [2. 포트폴리오 비교 데이터]
+    [2. 포트폴리오 비교 요약]
     A. 현재 포트폴리오 (Current):
-    - 구성 및 비중: {state['current_weights']}
     - 기대 수익률(연율화): {current['expected_return']*100:.2f}%
+    - 기대 변동성: {current['expected_volatility']*100:.2f}%
     - 최대 낙폭(MDD): {current['expected_mdd']*100:.2f}%
     - 원금 보존 승률(1년 뒤): {current['win_rate']*100:.2f}%
+    - 샤프 지수: {current['sharpe_ratio']:.2f}
 
     B. 최적 포트폴리오 (Target - BL Optimization):
-    - 권장 비중: {state['optimal_weights']}
     - 기대 수익률(연율화): {optimal['expected_return']*100:.2f}%
+    - 기대 변동성: {optimal['expected_volatility']*100:.2f}%
     - 최대 낙폭(MDD): {optimal['expected_mdd']*100:.2f}%
     - 원금 보존 승률(1년 뒤): {optimal['win_rate']*100:.2f}%
+    - 샤프 지수: {optimal['sharpe_ratio']:.2f}
 
-    [3. 리스크 클러스터링 진단 (통계적 상관관계 그룹)]
-    - 식별된 클러스터 구조: {state['clusters']}
+    [3. 비중 데이터]
+    - 현재 비중: {state['current_weights']}
+    - 최적 비중: {state['optimal_weights']}
+    
+    [4. 정수 단위 리밸런싱 실행 계획 (Prioritized)]
+    - 실행 순서 및 수량: {state['rebalance_plan']['trades']}
+    - 예상 최종 현금 잔고: ${state['rebalance_plan']['estimated_final_cash']:,.2f}
+    - 총 매도 대금: ${state['rebalance_plan']['total_sell_amount']:,.2f}
+    - 총 매수 대금: ${state['rebalance_plan']['total_buy_amount']:,.2f}
+
+    [5. 리스크 클러스터링 구조]
+    - 식별된 그룹: {state['clusters']}
 
     ------------------------------------------------------------
-    [보고서 작성 지침 - 다음 섹션들을 반드시 포함할 것]
-
-    1. **Executive Summary**: 현재 포트폴리오의 치명적인 약점과 최적화 후 얻게 될 전략적 이점(수익률 제고, 리스크 방어 등)을 요약하십시오.
-    
-    2. **Black-Litterman Insight**: 사용자의 주관적 견해(Score/Confidence)가 시장 데이터와 결합되어 어떻게 '수정 기대수익률'을 형성했는지, 그리고 이것이 비중 변화에 어떤 영향을 주었는지 설명하십시오.
-    
-    3. **Risk Clustering Analysis**: 현재 클러스터링 임계값 설정(0.4)을 통해 아주 세밀하게 리스크를 분산했습니다. 특정 그룹에 자금이 쏠리지 않도록 엔진이 어떻게 방어막을 쳤는지 분석하십시오.
-    
-    4. **Stress Test Results**: 1만 번의 몬테카를로 시뮬레이션 결과를 바탕으로, 향후 1년간 겪을 수 있는 최악의 시나리오와 이를 극복할 가능성(승률)을 언급하십시오.
-    
-    5. **Final Rebalancing Guide (Trade List)**: 
-       - 종목별 현재 비중 대비 매수/매도 필요량을 명확히 표기하십시오.
-       - 총 투자금 ${state['initial_value']:,.2f}를 기준으로 실제 집행해야 할 달러($) 금액을 계산하여 테이블 형식으로 제시하십시오.
-    
-    6. **Closing Advice**: 투자자가 심리적으로 흔들리지 않고 이 전략을 완수하기 위한 CRO로서의 마지막 조언을 남기십시오.
+    [보고서 작성 가이드라인]
+    1. **요약(Executive Summary)**: 차이점 정의 및 개선 방향 명시.
+    2. **블랙-리터만 전략 분석 (The Alpha)**: 의견 반영 및 비중 변화 배경 분석.
+    3. **리스크 클러스터링 및 상관관계 (The Defense)**: 분산 진단 및 방어막 분석.
+    4. **스트레스 테스트 및 몬테카를로 결과 (The Resilience)**: MDD와 승률 중심 해석.
+    5. **최종 리밸런싱 가이드 (The Execution)**: 
+       - 상기 제공된 '정수 단위 실행 계획'을 바탕으로 **매도(SELL) -> 매수(BUY)** 순서로 정렬된 테이블을 작성하십시오.
+       - 테이블 컬럼명은 반드시 다음과 같이 짧게 구성하십시오: 
+         [순서, 종목, 작업, 수량, 가격, 금액, 비중 변화]
+       - 각 종목별로 현재 보유량 대비 몇 주를 더 사거나 팔아야 하는지 명확히 제시하십시오.
+       - 마지막에 예상되는 최종 현금 잔고(${state['rebalance_plan']['estimated_final_cash']:,.2f})를 언급하며 마무리하십시오.
+    6. **CRO의 결론 및 투자 조언**.
 
     작성 언어: 한국어 (전문적이고 신뢰감 있는 어조)
     출력 형식: GitHub Flavored Markdown
@@ -170,7 +213,29 @@ def strategy_node(state: PortfolioState) -> PortfolioState:
     ]
     
     response = llm.invoke(messages)
-    return {"final_report": response.content}
+    
+    # 리포트 내용을 문자열로 강제 변환 (리스트 형태 방지)
+    report_content = response.content
+    if isinstance(report_content, list):
+        report_text = "".join([block.get("text", "") if isinstance(block, dict) else str(block) for block in report_content])
+    else:
+        report_text = str(report_content)
+        
+    return {"final_report": report_text}
+
+def pdf_node(state: PortfolioState) -> PortfolioState:
+    """최종 마크다운 리포트를 PDF 파일로 변환하는 노드"""
+    print("[Node 4] PDF 전략 보고서 생성 중...")
+    
+    timestamp = pd.Timestamp.today().strftime("%Y%m%d_%H%M")
+    filename = f"RiskManager_Report_{timestamp}.pdf"
+    
+    try:
+        pdf_path = generate_pdf_report(state["final_report"], filename)
+        return {"pdf_path": pdf_path}
+    except Exception as e:
+        print(f"      [Error] PDF 생성 중 오류 발생: {e}")
+        return {"pdf_path": "Error"}
 
 # 3. 그래프(Graph) 생성
 def build_guardian_graph():
@@ -179,10 +244,12 @@ def build_guardian_graph():
     workflow.add_node("analysis", analysis_node)
     workflow.add_node("simulate", simulation_node)
     workflow.add_node("report", strategy_node)
+    workflow.add_node("pdf", pdf_node) # PDF 노드 추가
     
     workflow.set_entry_point("analysis")
     workflow.add_edge("analysis", "simulate")
     workflow.add_edge("simulate", "report")
-    workflow.add_edge("report", END)
+    workflow.add_edge("report", "pdf") # report -> pdf 연결
+    workflow.add_edge("pdf", END)
     
     return workflow.compile()

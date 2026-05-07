@@ -30,3 +30,12 @@ build/
 .vscode/
 .idea/
 *.swp
+
+# 이미지
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.svg

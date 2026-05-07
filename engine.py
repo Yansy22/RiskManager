@@ -193,3 +193,66 @@ def optimize_portfolio(
             print(f"        - {t}: {w*100:.1f}%")
             
     return optimal_weights
+
+def calculate_rebalancing_plan(
+    current_weights: Dict[str, float],
+    optimal_weights: Dict[str, float],
+    current_prices: pd.Series,
+    total_value: float,
+    current_holdings: Dict[str, Any],
+    tolerance: float = 0.02 # 2% 미만 변화는 무시
+) -> Dict[str, Any]:
+    """
+    정수 단위 매매 수량과 실행 우선순위를 포함한 리밸런싱 계획을 수립합니다.
+    """
+    trades = []
+    
+    # 1. 모든 종목 리스트 (CASH 제외)
+    all_tickers = list(set(current_weights.keys()) | set(optimal_weights.keys()))
+    if "CASH" in all_tickers: all_tickers.remove("CASH")
+    
+    for ticker in all_tickers:
+        price = current_prices.get(ticker)
+        if not price or price <= 0: continue
+        
+        target_w = optimal_weights.get(ticker, 0.0)
+        curr_w = current_weights.get(ticker, 0.0)
+        
+        # Tolerance 체크: 변화폭이 너무 작으면 유지
+        if abs(target_w - curr_w) < tolerance:
+            continue
+            
+        target_shares = int((total_value * target_w) // price)
+        curr_shares = current_holdings.get(ticker, {}).get("quantity", 0)
+        
+        diff_shares = target_shares - curr_shares
+        
+        if diff_shares != 0:
+            trades.append({
+                "ticker": ticker,
+                "action": "BUY" if diff_shares > 0 else "SELL",
+                "shares": abs(diff_shares),
+                "price": float(price),
+                "amount": abs(diff_shares * price),
+                "weight_diff": target_w - curr_w
+            })
+            
+    # 2. 우선순위 정렬
+    # SELL: 비중 감소폭이 큰 순서대로 (현금 확보 우선)
+    sells = sorted([t for t in trades if t["action"] == "SELL"], key=lambda x: x["weight_diff"])
+    # BUY: 비중 증가폭이 큰 순서대로
+    buys = sorted([t for t in trades if t["action"] == "BUY"], key=lambda x: x["weight_diff"], reverse=True)
+    
+    # 3. 예상 최종 현금 계산
+    total_sell_amount = sum(t["amount"] for t in sells)
+    total_buy_amount = sum(t["amount"] for t in buys)
+    # 초기 현금에서 매도액을 더하고 매수액을 뺀 값
+    initial_cash = current_weights.get("CASH", 0.0) * total_value
+    estimated_final_cash = initial_cash + total_sell_amount - total_buy_amount
+    
+    return {
+        "trades": sells + buys, # 매도 후 매수 순서로 합침
+        "estimated_final_cash": estimated_final_cash,
+        "total_sell_amount": total_sell_amount,
+        "total_buy_amount": total_buy_amount
+    }

@@ -58,6 +58,8 @@ def main():
     initial_value = float(stock_value + cash)
     
     current_weights = {t: (holdings[t]["quantity"] * current_prices[t]) / initial_value for t in holdings}
+    current_weights["CASH"] = cash / initial_value
+    
     # watchlist 종목은 현재 비중 0%
     for t in watchlist:
         if t not in current_weights:
@@ -96,7 +98,20 @@ def main():
     print("\n" + "="*60)
     print("📜 AI 가디언 최종 전략 분석 리포트")
     print("="*60 + "\n")
-    print(result["final_report"])
+    
+    report = result["final_report"]
+    if isinstance(report, list):
+        # 리스트 형태인 경우 텍스트 블록만 추출하여 합침
+        report_text = "".join([block.get("text", "") if isinstance(block, dict) else str(block) for block in report])
+    else:
+        report_text = str(report)
+        
+    print(report_text)
+    
+    if result.get("pdf_path") and result["pdf_path"] != "Error":
+        print("\n" + "="*60)
+        print(f"📁 PDF 리포트가 생성되었습니다: {os.path.abspath(result['pdf_path'])}")
+        print("="*60 + "\n")
 
 if __name__ == "__main__":
     main()

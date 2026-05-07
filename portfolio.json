@@ -29,6 +29,7 @@
   "settings": {
     "risk_free_rate": 0.035,
     "sector_limit": 0.3,
-    "lookback_years": 3
+    "lookback_years": 3,
+    "clustering_threshold": 1
   }
 }

@@ -114,8 +114,14 @@ def get_simulation_stats(portfolio_paths: np.ndarray, initial_value: float) -> d
     max_drawdowns = np.min(drawdowns, axis=1) # 궤적별 최악의 MDD (음수)
     expected_mdd = np.mean(max_drawdowns)
     
+    # 추가 지표: 연율화 변동성 및 샤프 지수
+    expected_volatility = np.std(returns) 
+    sharpe_ratio = (expected_return - 0.035) / expected_volatility if expected_volatility > 0 else 0
+    
     return {
         "expected_return": expected_return,
+        "expected_volatility": expected_volatility,
+        "sharpe_ratio": sharpe_ratio,
         "median_return": median_return,
         "var_95": var_95,
         "cvar_95": cvar_95,
