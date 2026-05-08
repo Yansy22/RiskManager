@@ -28,8 +28,12 @@ def main():
     cash = user_data.get("cash", 0.0)
     settings = user_data.get("settings", {"risk_free_rate": 0.035, "sector_limit": 0.3})
     
-    if not holdings:
-        print("Error: 보유 주식(holdings) 정보가 없습니다.")
+    if not holdings and not watchlist:
+        print("Error: 보유 주식(holdings) 및 관심 종목(watchlist) 정보가 모두 없습니다.")
+        return
+
+    if not holdings and cash <= 0:
+        print("Error: 현재 보유한 주식이 없으며, 투자 가능한 현금(cash)도 없습니다.")
         return
 
     print("\n[1/3] 기초 시장 데이터 수집 및 전처리 중...")
