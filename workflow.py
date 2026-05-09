@@ -11,6 +11,7 @@ from data_provider import get_monte_carlo_params, get_market_caps, get_risk_free
 from simulation import run_portfolio_simulation, get_simulation_stats
 from engine import calculate_risk_clusters, black_litterman_posterior, optimize_portfolio, calculate_rebalancing_plan
 from pdf_generator import generate_pdf_report
+from analysis import perform_attribution_analysis
 
 # 1. 상태(State) 정의
 class PortfolioState(TypedDict):
@@ -124,6 +125,71 @@ def simulation_node(state: PortfolioState) -> PortfolioState:
         init_val,
         state["user_holdings"]
     )
+    
+    from db_manager import RiskManagerDB
+    db = RiskManagerDB()
+    
+    # 포트폴리오 로그 저장
+    opt_expected_ret = opt_stats["expected_return"]
+    opt_mdd = opt_stats["expected_mdd"]
+    cash_weight = state["optimal_weights"].get("CASH", 0.0)
+    
+    current_date = pd.Timestamp.today()
+    week_id = f"{current_date.year}-W{current_date.weekofyear:02d}"
+    
+    db.upsert_portfolio_log(
+        week_id=week_id,
+        total_aum=init_val,
+        cash_weight=cash_weight,
+        portfolio_expected_ret=opt_expected_ret,
+        monte_carlo_mdd=opt_mdd
+    )
+    
+    db.delete_asset_logs(week_id)
+    
+    # 종목별 상세(클러스터 ID 맵핑)
+    ticker_to_cluster = {}
+    for cid, members in state["clusters"].items():
+        for m in members:
+            ticker_to_cluster[m] = cid
+            
+    # 사용자 견해 맵핑
+    user_views = {}
+    for t in state["user_holdings"]:
+        user_views[t] = state["user_holdings"][t]
+    for t in state["user_watchlist"]:
+        user_views[t] = state["user_watchlist"][t]
+        
+    # 거래 정보 맵핑
+    trades_map = {t["ticker"]: t for t in rebalance_plan["trades"]}
+    
+    # 자산 로그 저장
+    for ticker, target_w in state["optimal_weights"].items():
+        if ticker == "CASH": continue
+        
+        expected_ret = state["posterior_returns"].get(ticker, 0.0)
+        u_view = user_views.get(ticker, {}).get("score", 5)
+        u_conf = user_views.get(ticker, {}).get("confidence", 5)
+        c_id = ticker_to_cluster.get(ticker, -1)
+        
+        trade_info = trades_map.get(ticker, {})
+        t_action = trade_info.get("action", "HOLD")
+        t_qty = trade_info.get("shares", 0.0)
+        t_price = current_prices_with_cash.get(ticker, 0.0)
+        
+        db.insert_asset_log(
+            week_id=week_id,
+            ticker=ticker,
+            target_weight=target_w,
+            expected_return=expected_ret,
+            implied_equilibrium_ret=0.0, # Pi is not saved in state currently
+            user_view=u_view,
+            view_confidence=u_conf,
+            cluster_id=c_id,
+            trade_action=t_action,
+            trade_qty=t_qty,
+            execution_price=t_price
+        )
     
     return {
         "current_stats": curr_stats, 
