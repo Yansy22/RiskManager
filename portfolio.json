@@ -1,6 +1,12 @@
 {
-  "holdings": {},
-  "cash": 1330,
+  "holdings": {
+    "NVDA": {
+      "quantity": 1,
+      "score": 7,
+      "confidence": 5
+    }
+  },
+  "cash": 1118,
   "watchlist": {
     "JEPI": {
       "score": 7,
@@ -21,10 +27,6 @@
     "META": {
       "score": 6,
       "confidence": 3
-    },
-    "NVDA": {
-      "score": 5,
-      "confidence": 5
     },
     "AVAV": {
       "score": 2,
