@@ -136,43 +136,74 @@ def optimize_portfolio(
     risk_free_rate: float = 0.035
 ) -> Dict[str, float]:
     """
-    샤프 지수를 극대화하는 최적 비중을 산출합니다 (클러스터 제약 조건 포함).
+    샤프 지수를 극대화하는 최적 비중을 산출합니다 (동적 클러스터 한계치 및 내적 역변동성 제약 조건 포함).
     """
     tickers = list(expected_returns.index)
     num_assets = len(tickers)
     
-    # 1. 목적 함수: -Sharpe Ratio (minimize를 위해 부호 반전)
+    # 1. 개별 연환산 변동성 및 시장 평균 변동성 계산
+    asset_vols = pd.Series(np.sqrt(np.diag(cov_matrix.values)), index=tickers)
+    market_avg_vol = asset_vols.mean()
+    
+    # 2. 목적 함수: -Sharpe Ratio (minimize를 위해 부호 반전)
     def objective(weights):
         p_return = np.sum(expected_returns.values * weights)
         p_vol = np.sqrt(weights.T @ cov_matrix.values @ weights)
         if p_vol == 0: return 0
         return -(p_return - risk_free_rate) / p_vol
 
-    # 2. 제약 조건 (Constraints)
+    # 3. 제약 조건 (Constraints)
     constraints = []
     
     # A. 비중 합계 = 1.0
     constraints.append({'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0})
     
-    # B. 클러스터별 비중 제한 (예: 특정 클러스터 합 <= 30%)
+    # B. 클러스터별 동적 비중 제한 및 클러스터 내부 역변동성 등식 제약 조건
     for cid, members in clusters.items():
         # 각 멤버의 인덱스 찾기
         indices = [tickers.index(m) for m in members if m in tickers]
-        if indices:
-            # 해당 클러스터 멤버들의 비중 합이 limit보다 작아야 함 (limit - sum >= 0)
-            constraints.append({
-                'type': 'ineq', 
-                'fun': lambda w, idx=indices: cluster_limit - np.sum(w[idx])
-            })
+        if not indices:
+            continue
+            
+        # (1) 동적 한계치 계산
+        cluster_avg_vol = asset_vols[members].mean()
+        # 평균 변동성에 반비례하게 한계치 결정 (평균 변동성 대비 동적 조절)
+        if cluster_avg_vol > 0:
+            dynamic_limit = cluster_limit * (market_avg_vol / cluster_avg_vol)
+        else:
+            dynamic_limit = cluster_limit
+        dynamic_limit = float(np.clip(dynamic_limit, 0.10, 0.50))
+        
+        print(f"      [Engine] Risk Cluster {cid} (종목: {members}, 평균 변동성: {cluster_avg_vol*100:.1f}%) -> 동적 한계치: {dynamic_limit*100:.1f}%")
+        
+        # 해당 클러스터 멤버들의 비중 합이 dynamic_limit보다 작아야 함 (dynamic_limit - sum >= 0)
+        constraints.append({
+            'type': 'ineq', 
+            'fun': lambda w, idx=indices, limit=dynamic_limit: limit - np.sum(w[idx])
+        })
+        
+        # (2-2) 클러스터 내부 종목 간의 역변동성 등식 제약 조건 추가 (w_i * vol_i = w_0 * vol_0)
+        if len(indices) > 1:
+            first_idx = indices[0]
+            first_vol = asset_vols.iloc[first_idx]
+            
+            # 클러스터 내의 임의의 두 종목 i, j에 대해 w_i * vol_i = w_j * vol_j 여야 하므로,
+            # 기준 종목(indices[0])과 나머지 종목 간의 차이를 0으로 고정시킵니다.
+            for idx in indices[1:]:
+                vol = asset_vols.iloc[idx]
+                constraints.append({
+                    'type': 'eq',
+                    'fun': lambda w, idx=idx, f_idx=first_idx, v=vol, f_v=first_vol: w[idx] * v - w[f_idx] * f_v
+                })
 
-    # 3. 각 종목별 비중 범위 (0.0 ~ 1.0, 공매도 금지)
+    # 4. 각 종목별 비중 범위 (0.0 ~ 1.0, 공매도 금지)
     bounds = tuple((0.0, 1.0) for _ in range(num_assets))
     
-    # 4. 초기값 (균등 배분)
+    # 5. 초기값 (균등 배분)
     init_guess = np.array([1.0 / num_assets] * num_assets)
     
-    # 5. 최적화 실행
-    print(f"      [Engine] 최적화 알고리즘 실행 중 (목표: Max Sharpe Ratio)...")
+    # 6. 최적화 실행
+    print(f"      [Engine] 최적화 알고리즘 실행 중 (목표: Max Sharpe Ratio, 동적 한계치 & 역변동성 제약 포함)...")
     result = minimize(
         objective, 
         init_guess, 
@@ -189,8 +220,8 @@ def optimize_portfolio(
     # 결과 요약 출력
     print(f"      [Engine] 최적화 완료.")
     for t, w in optimal_weights.items():
-        if w > 0.01: # 1% 이상 비중만 출력
-            print(f"        - {t}: {w*100:.1f}%")
+        if w > 0.001: # 0.1% 이상 비중만 출력
+            print(f"        - {t}: {w*100:.2f}% (개별 변동성: {asset_vols[t]*100:.1f}%)")
             
     return optimal_weights
 
@@ -256,3 +287,51 @@ def calculate_rebalancing_plan(
         "total_sell_amount": total_sell_amount,
         "total_buy_amount": total_buy_amount
     }
+
+def generate_dendrogram_plot(corr_matrix: pd.DataFrame, threshold: float = 1.0, output_path: str = "dendrogram.png"):
+    """
+    상관관계 거리를 바탕으로 계층 트리(덴드로그램)를 시각화하여 이미지 파일로 저장합니다.
+    """
+    import matplotlib
+    matplotlib.use('Agg') # 비대화형 백엔드 사용 (GUI 창 팝업 방지)
+    import matplotlib.pyplot as plt
+    from scipy.cluster.hierarchy import linkage, dendrogram
+    from scipy.spatial.distance import squareform
+    
+    # 1. 상관계수를 거리(Distance)로 변환: d = sqrt(2 * (1 - rho))
+    dist_matrix = np.sqrt(2 * (1 - corr_matrix))
+    condensed_dist = squareform(dist_matrix, checks=False)
+    
+    # 2. 계층적 군집화 (Ward's Method)
+    Z = linkage(condensed_dist, method='ward')
+    
+    # 3. 덴드로그램 그리기
+    plt.figure(figsize=(10, 6))
+    
+    # 한국어 폰트 설정 (PDF와 일치시키기 위해 맑은 고딕 사용 권장)
+    try:
+        plt.rcParams['font.family'] = 'Malgun Gothic'
+        plt.rcParams['axes.unicode_minus'] = False
+    except:
+        pass
+        
+    dendrogram(
+        Z, 
+        labels=corr_matrix.index, 
+        leaf_rotation=45, 
+        leaf_font_size=10
+    )
+    
+    plt.title("Portfolio Correlation Hierarchical Tree (Dendrogram)", fontsize=14, fontweight='bold', pad=15)
+    plt.xlabel("Stocks (Tickers)", fontsize=11, labelpad=10)
+    plt.ylabel("Risk Distance", fontsize=11, labelpad=10)
+    
+    # 임계점 가로선 추가 (빨간색 점선)
+    plt.axhline(y=threshold, color='red', linestyle='--', linewidth=1.5, label=f'Threshold (t={threshold})')
+    plt.legend(loc='upper right')
+    
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    print(f"      [Engine] 덴드로그램 시각화 이미지 저장 완료: {output_path}")
+

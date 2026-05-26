@@ -107,6 +107,20 @@ def generate_pdf_report(markdown_text: str, output_path: str):
                 pdf.ln(3)
                 pdf.set_x(pdf.l_margin)
                 pdf.multi_cell(page_width, 10, line[4:], align="L")
+            elif line.startswith("![") and "](" in line:
+                try:
+                    parts = line.split("](")
+                    img_path = parts[1].replace(")", "").strip()
+                    if os.path.exists(img_path):
+                        pdf.ln(5)
+                        img_w = 150  # mm width
+                        x_pos = (pdf.w - img_w) / 2
+                        pdf.image(img_path, x=x_pos, w=img_w)
+                        pdf.ln(5)
+                    continue
+                except Exception as img_err:
+                    print(f"      [PDF Warning] Image embedding failed: {img_err}")
+                    continue
             else:
                 pdf.set_font("Malgun", "", 11)
                 # 불필요한 특수문자 제거 및 줄바꿈

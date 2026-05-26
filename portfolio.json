@@ -1,42 +1,18 @@
 {
   "holdings": {
-    "NVDA": {
-      "quantity": 1,
-      "score": 7,
-      "confidence": 5
-    }
+    "NVDA": {},
+    "META": {},
+    "ADBE": {}
   },
-  "cash": 1118,
   "watchlist": {
-    "JEPI": {
-      "score": 7,
-      "confidence": 7
-    },
-    "VST": {
-      "score": 6,
-      "confidence": 4
-    },
-    "LLY": {
-      "score": 6,
-      "confidence": 5
-    },
-    "ADBE": {
-      "score": 3,
-      "confidence": 3
-    },
-    "META": {
-      "score": 6,
-      "confidence": 3
-    },
-    "AVAV": {
-      "score": 2,
-      "confidence": 2
-    }
+    "JEPI": {},
+    "VST": {},
+    "LLY": {},
+    "AVAV": {}
   },
   "settings": {
-    "risk_free_rate": 0.035,
     "sector_limit": 0.3,
     "lookback_years": 3,
-    "clustering_threshold": 1
+    "clustering_threshold": 1.0
   }
 }
